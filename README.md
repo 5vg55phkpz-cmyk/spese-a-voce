@@ -9,3 +9,5 @@ I dati restano sul dispositivo di ogni persona (localStorage); nessun server.
 - `_headers` — intestazioni di cache per Netlify
 
 Pubblicata su Netlify direttamente dalla cartella principale, senza comando di build.
+
+Il codice è pubblico; i dati delle spese restano solo sul dispositivo di ogni persona.
