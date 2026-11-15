@@ -651,7 +651,7 @@ const mic = $("#mic"), entry = $("#entry"), statusEl = $("#status");
 let rec = null, listening = false, baseText = "", micAvailable = false, safetyTimer = null;
 const IDLE_MIC = "Tocca il microfono e di' la spesa, oppure scrivila.";
 const IDLE_NO_MIC = isIOS
-  ? "Tocca il campo qui sotto e usa il microfono della tastiera per dettare la spesa."
+  ? "Tocca il microfono grande, poi il 🎤 della tastiera e di' la spesa."
   : "Scrivi la spesa e premi Registra.";
 function setListening(on) {
   listening = on; mic.classList.toggle("on", on);
@@ -659,11 +659,46 @@ function setListening(on) {
   statusEl.textContent = on ? "Ti ascolto… di' importo e cosa hai comprato." : (micAvailable ? IDLE_MIC : IDLE_NO_MIC);
 }
 function noMic(msg) { micAvailable = false; mic.hidden = true; statusEl.textContent = msg || IDLE_NO_MIC; }
+/* iPhone e iPad: il riconoscimento vocale di Safari si blocca dopo il primo uso, quindi usiamo
+   la dettatura della tastiera (sempre affidabile) e registriamo da soli appena l'utente smette di parlare */
+const KB_MODE = isIOS;
+let kbArmed = false, kbTimer = null;
+const KB_HINT = "Tocca il microfono grande, poi il 🎤 della tastiera e di' la spesa.";
 function initDictation() {
-  // Sull'iPhone le app aggiunte alla schermata Home non hanno il riconoscimento vocale del browser
-  if (!SR || (isIOS && isStandalone)) { noMic(); return; }
+  if (KB_MODE) {
+    micAvailable = false; mic.hidden = false;
+    mic.setAttribute("aria-label", "Detta la spesa con la tastiera");
+    statusEl.textContent = KB_HINT;
+    return;
+  }
+  if (!SR) { noMic(); return; }
   micAvailable = true; mic.hidden = false; setListening(false);
 }
+function kbTrySave() {
+  const t = entry.value.trim();
+  if (!t || t.split(/\s+/).length < 2) return false;
+  if (!parseExpenses(t, state.categories, new Date()).some(r => r.amount)) return false;
+  submitEntry();
+  statusEl.textContent = "Registrata. Ritocca il 🎤 della tastiera per dettare la prossima.";
+  return true;
+}
+mic.addEventListener("click", () => {
+  if (!KB_MODE) return;
+  kbArmed = true;
+  entry.focus();
+  statusEl.textContent = "Ora tocca il 🎤 in basso a destra sulla tastiera e di' la spesa: la registro appena finisci.";
+});
+entry.addEventListener("input", () => {
+  if (!kbArmed) return;
+  clearTimeout(kbTimer);
+  kbTimer = setTimeout(kbTrySave, 2200); // 2,2 secondi senza nuove parole: la frase è finita
+});
+entry.addEventListener("blur", () => {
+  if (!kbArmed) return;
+  clearTimeout(kbTimer);
+  kbArmed = false;
+  kbTrySave();
+});
 /* ===== Registro tecnico del microfono (per capire i problemi sui telefoni) ===== */
 const micLog = [];
 function logMic(ev) {
@@ -1141,7 +1176,7 @@ function renderBackupInfo() {
   const ua = navigator.userAgent;
   const where = isStandalone ? "app installata" : /CriOS/.test(ua) ? "Chrome" : /FxiOS/.test(ua) ? "Firefox" : /WhatsApp|FBAN|FBAV|Instagram/.test(ua) ? "browser di un'altra app" : (isIOS && !/Safari\//.test(ua)) ? "browser di un'altra app" : "browser";
   $("#micLogBox").textContent = micLog.length ? "Registro microfono: " + micLog.join(" · ") : "";
-  $("#versionInfo").textContent = "Versione " + APP_VERSION + " · aperta da: " + where + " · dettatura dell'app: " + (SR ? (micAvailable ? "sì" : "no") : "non supportata");
+  $("#versionInfo").textContent = "Versione " + APP_VERSION + " · aperta da: " + where + " · dettatura: " + (KB_MODE ? "tastiera" : SR ? (micAvailable ? "app" : "no") : "non supportata");
 }
 
 /* ===== Invito a installare ===== */
@@ -1173,7 +1208,7 @@ if (isIOS && !isStandalone) {
 }
 
 
-const APP_VERSION = "9";
+const APP_VERSION = "10";
 /* ===== Invita qualcuno ===== */
 const APP_URL = "https://spesequotidiane33.netlify.app/";
 const SHARE_TEXT = "Prova Spese a voce: dici la spesa e l'app la registra e la divide per categoria. Gratis, senza registrazione.";
