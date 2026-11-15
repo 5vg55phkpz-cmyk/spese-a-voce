@@ -661,39 +661,75 @@ function initDictation() {
   if (!SR || (isIOS && isStandalone)) { noMic(); return; }
   micAvailable = true; mic.hidden = false; setListening(false);
 }
+let finishRec = null;
+function micError(code) {
+  if (code === "not-allowed") return isIOS
+    ? "Safari non ha il permesso di usare il microfono. Vai in Impostazioni › App › Safari › Microfono, scegli Consenti e ricarica la pagina."
+    : "Il browser non ha il permesso di usare il microfono. Tocca il lucchetto accanto all'indirizzo › Autorizzazioni › Microfono › Consenti, poi riprova.";
+  if (code === "service-not-allowed") return isIOS
+    ? "Il riconoscimento vocale dell'iPhone è spento. Attiva Impostazioni › Generali › Tastiera › Abilita dettatura, poi ricarica la pagina."
+    : "Il riconoscimento vocale non è disponibile in questo browser. Prova con Chrome, oppure scrivi la spesa.";
+  if (code === "no-speech") return "Non ho sentito nulla. Tocca il microfono e parla subito dopo.";
+  if (code === "network") return "Per dettare serve la connessione a internet. Puoi scrivere la spesa.";
+  if (code === "audio-capture") return "Non riesco a usare il microfono: forse lo sta usando un'altra app. Chiudila e riprova.";
+  if (code === "language-not-supported") return "L'italiano non è disponibile per la dettatura su questo dispositivo. Usa il microfono della tastiera.";
+  if (code === "start-timeout") return "Il microfono non è partito. Riprova, oppure usa il microfono della tastiera.";
+  return "La dettatura si è interrotta (" + code + "). Riprova, oppure usa il microfono della tastiera.";
+}
+function joinTranscripts(results) {
+  // Alcuni browser (iPhone) ripetono nel risultato nuovo anche il testo già detto: lo teniamo una volta sola
+  let acc = "";
+  for (let i = 0; i < results.length; i++) {
+    const t = (results[i][0] && results[i][0].transcript || "").trim();
+    if (!t) continue;
+    if (acc && t.toLowerCase().startsWith(acc.toLowerCase())) acc = t;
+    else if (acc && acc.toLowerCase().endsWith(t.toLowerCase())) continue;
+    else acc = acc ? acc + " " + t : t;
+  }
+  return acc;
+}
+function stopRec() {
+  clearTimeout(silenceTimer);
+  if (!rec) return;
+  try { rec.stop(); } catch (e) {}
+  // se il browser non chiude la dettatura da solo, la chiudiamo noi
+  const r = rec;
+  setTimeout(() => { if (rec === r && finishRec) { try { r.abort(); } catch (e) {} finishRec(); } }, 1500);
+}
+let silenceTimer = null, startTimer = null;
 mic.addEventListener("click", () => {
   if (!micAvailable) return;
-  if (listening) { try { rec && rec.stop(); } catch (e) {} return; }
-  let errMsg = "", finalText = "";
+  if (listening) { stopRec(); return; }
+  let errCode = "", heard = false, started = false, done = false;
   baseText = entry.value.trim() ? entry.value.trim() + " " : "";
-  rec = new SR();
-  rec.lang = "it-IT"; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
-  rec.onresult = ev => {
-    let interim = ""; finalText = "";
-    for (let i = 0; i < ev.results.length; i++) {
-      const r = ev.results[i];
-      if (r.isFinal) finalText += r[0].transcript; else interim += r[0].transcript;
-    }
-    entry.value = (baseText + finalText + " " + interim).replace(/\s+/g, " ").trim();
-  };
-  rec.onerror = ev => {
-    if (ev.error === "not-allowed" || ev.error === "service-not-allowed") errMsg = "noperm";
-    else if (ev.error === "no-speech") errMsg = "Non ho sentito nulla. Tocca il microfono e riprova.";
-    else if (ev.error === "network") errMsg = "Per dettare serve la connessione a internet. Puoi scrivere la spesa.";
-    else if (ev.error === "audio-capture") errMsg = "Non trovo il microfono del dispositivo. Puoi scrivere la spesa.";
-    else if (ev.error !== "aborted") errMsg = "Il riconoscimento vocale si è interrotto. Riprova.";
-  };
-  rec.onend = () => {
-    clearTimeout(safetyTimer);
+  const r = new SR();
+  rec = r;
+  r.lang = "it-IT"; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+  const arm = ms => { clearTimeout(silenceTimer); silenceTimer = setTimeout(stopRec, ms); };
+  finishRec = () => {
+    if (done) return; done = true;
+    clearTimeout(silenceTimer); clearTimeout(startTimer); clearTimeout(safetyTimer);
+    if (rec === r) { rec = null; finishRec = null; }
     setListening(false);
-    if (errMsg === "noperm") { noMic("Il microfono non è autorizzato. Puoi abilitarlo nelle impostazioni del browser, oppure scrivere la spesa."); return; }
-    if (errMsg) statusEl.textContent = errMsg;
-    if (entry.value.trim() && entry.value.trim() !== baseText.trim()) submitEntry();
+    if (errCode && errCode !== "aborted") statusEl.textContent = micError(errCode);
+    else if (!heard) statusEl.textContent = micError("no-speech");
+    if (heard && entry.value.trim() && entry.value.trim() !== baseText.trim()) submitEntry();
   };
+  r.onstart = () => { started = true; clearTimeout(startTimer); setListening(true); arm(8000); };
+  r.onresult = ev => {
+    const text = joinTranscripts(ev.results);
+    if (!text) return;
+    heard = true;
+    entry.value = (baseText + text).replace(/\s+/g, " ").trim();
+    arm(1800); // 1,8 secondi di silenzio: la frase è finita
+  };
+  r.onerror = ev => { errCode = ev.error || "unknown"; };
+  r.onend = () => finishRec && rec === r ? finishRec() : null;
   try {
-    rec.start(); setListening(true);
-    safetyTimer = setTimeout(() => { try { rec.stop(); } catch (e) {} }, 15000);
-  } catch (e) { setListening(false); statusEl.textContent = "Il microfono non è partito. Toccalo di nuovo."; }
+    r.start(); setListening(true);
+    startTimer = setTimeout(() => { if (!started && !heard) { errCode = "start-timeout"; try { r.abort(); } catch (e) {} if (rec === r && finishRec) finishRec(); } }, 5000);
+    safetyTimer = setTimeout(stopRec, 30000);
+  } catch (e) { rec = null; setListening(false); statusEl.textContent = micError("start-timeout"); }
 });
 
 /* ===== Salvare file: condividi sul telefono, scarica sul computer ===== */
@@ -756,7 +792,7 @@ function showResult(es) {
   $("#resUndo").textContent = es.length === 1 ? "Annulla" : "Annulla tutte";
   $("#result").hidden = false;
 }
-$("#entryForm").addEventListener("submit", ev => { ev.preventDefault(); if (listening && rec) { try { rec.stop(); } catch (e) {} } else submitEntry(); });
+$("#entryForm").addEventListener("submit", ev => { ev.preventDefault(); if (listening && rec) stopRec(); else submitEntry(); });
 $("#examples").addEventListener("click", ev => { const b = ev.target.closest(".chip"); if (b) { entry.value = b.textContent; entry.focus(); } });
 $("#resUndo").addEventListener("click", async () => {
   if (!lastSaved.length) return;
