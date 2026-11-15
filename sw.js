@@ -1,6 +1,6 @@
 /* Spese a voce: funzionamento offline.
    Cambia VERSION quando pubblichi una nuova versione dell'app. */
-const VERSION = "v2";
+const VERSION = "v3";
 const CACHE = "spese-" + VERSION;
 const SHELL = ["./", "./index.html", "./manifest.webmanifest",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png", "./icons/favicon-32.png"];
