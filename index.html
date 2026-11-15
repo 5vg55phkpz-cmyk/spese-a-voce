@@ -192,6 +192,7 @@ nav.tabs button[aria-current="page"] { color: var(--accent); background: var(--a
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>
       </button>
       <div class="status" id="status" aria-live="polite">Scrivi la spesa e premi Registra.</div>
+      <button class="btn" type="button" id="micReset" hidden>Sblocca il microfono</button>
       <form class="entry" id="entryForm">
         <input id="entry" type="text" autocomplete="off" placeholder="es. 12 euro al bar" aria-label="Spesa da registrare">
         <button class="btn primary" type="submit">Registra</button>
@@ -696,10 +697,29 @@ function joinTranscripts(results) {
   return acc;
 }
 
-/* Un solo riconoscitore vocale, riusato a ogni tocco: su iPhone crearne uno nuovo dopo il primo lo lascia "sordo" */
-let recInst = null, session = null, lastHeard = "", silenceTimer = null, startTimer = null, sessionCount = 0;
-function makeRec() {
-  const r = new SR();
+/* La prima dettatura usa la pagina; dalla seconda in poi ogni dettatura parte in una pagina nascosta nuova,
+   perché su iPhone Safari dopo la prima sessione smette di sentire nella stessa pagina */
+let recInst = null, recFrame = null, session = null, lastHeard = "", silenceTimer = null, startTimer = null, sessionCount = 0;
+function freshRecognizer() {
+  if (sessionCount <= 1) return { ctor: SR, frame: null, mode: "pagina" };
+  try {
+    const f = document.createElement("iframe");
+    f.setAttribute("aria-hidden", "true"); f.tabIndex = -1;
+    f.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;left:-10px;top:-10px";
+    document.body.appendChild(f);
+    const W = f.contentWindow;
+    const C = W && (W.SpeechRecognition || W.webkitSpeechRecognition);
+    if (C) return { ctor: C, frame: f, mode: "nuova" };
+    f.remove();
+  } catch (e) {}
+  return { ctor: SR, frame: null, mode: "pagina" };
+}
+function disposeRecognizer(r, frame) {
+  try { r.onstart = r.onaudiostart = r.onspeechstart = r.onresult = r.onerror = r.onend = null; r.abort(); } catch (e) {}
+  if (frame) setTimeout(() => { try { frame.remove(); } catch (e) {} }, 400);
+}
+function makeRec(ctor) {
+  const r = new ctor();
   r.lang = "it-IT"; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
   r.onstart = () => { logMic("start"); if (session) session.onstart(); };
   r.onaudiostart = () => logMic("audio");
@@ -712,25 +732,30 @@ function makeRec() {
 function stopRec() {
   clearTimeout(silenceTimer);
   if (!recInst || !session) return;
-  const s = session;
-  try { recInst.stop(); } catch (e) {}
-  // se il browser non chiude la dettatura da solo, la chiudiamo noi
-  setTimeout(() => { if (session === s) { logMic("chiusura forzata"); try { recInst.abort(); } catch (e) {} s.finish(); } }, 1500);
+  const s = session, r = recInst;
+  try { r.stop(); } catch (e) {}
+  setTimeout(() => { if (session === s) { logMic("chiusura forzata"); try { r.abort(); } catch (e) {} s.finish(); } }, 1500);
+}
+function showMicReset(show) {
+  const b = $("#micReset"); if (b) b.hidden = !show;
 }
 mic.addEventListener("click", () => {
   if (!micAvailable) return;
   if (listening) { stopRec(); return; }
+  showMicReset(false);
   sessionCount++;
-  logMic("tocco n." + sessionCount);
+  // chiude del tutto il riconoscitore precedente
+  if (recInst) { disposeRecognizer(recInst, recFrame); recInst = null; recFrame = null; }
+  const fresh = freshRecognizer();
+  logMic("tocco n." + sessionCount + " (" + fresh.mode + ")");
   baseText = entry.value.trim() ? entry.value.trim() + " " : "";
-  const s = { errCode: "", heard: false, started: false, done: false };
+  const s = { errCode: "", heard: false, started: false, done: false, voice: false, raw: "" };
   const arm = ms => { clearTimeout(silenceTimer); silenceTimer = setTimeout(stopRec, ms); };
   s.onstart = () => { s.started = true; clearTimeout(startTimer); setListening(true); arm(8000); };
   s.onresult = ev => {
     const raw = joinTranscripts(ev.results);
     s.raw = raw;
     let text = raw;
-    // riusando il riconoscitore, alcuni iPhone ripetono la frase della volta prima: la togliamo
     if (lastHeard && text.toLowerCase().startsWith(lastHeard.toLowerCase())) text = text.slice(lastHeard.length).trim();
     if (!text) return;
     s.heard = true;
@@ -742,26 +767,45 @@ mic.addEventListener("click", () => {
     if (s.heard && s.raw) lastHeard = s.raw;
     clearTimeout(silenceTimer); clearTimeout(startTimer); clearTimeout(safetyTimer);
     if (session === s) session = null;
+    const r = recInst, f = recFrame;
+    if (r) { disposeRecognizer(r, f); if (recInst === r) { recInst = null; recFrame = null; } }
     setListening(false);
-    if (s.errCode && s.errCode !== "aborted") statusEl.textContent = micError(s.errCode);
-    else if (!s.heard) statusEl.textContent = micError("no-speech");
+    if (!s.heard) {
+      if (sessionCount > 1 && (!s.errCode || s.errCode === "aborted" || s.errCode === "no-speech")) {
+        statusEl.textContent = "Il microfono si è bloccato. Tocca «Sblocca il microfono» qui sotto e riprova.";
+        showMicReset(true);
+      } else statusEl.textContent = micError(s.errCode && s.errCode !== "aborted" ? s.errCode : "no-speech");
+    } else if (s.errCode && s.errCode !== "aborted" && s.errCode !== "no-speech") {
+      statusEl.textContent = micError(s.errCode);
+    }
     if (s.heard && entry.value.trim() && entry.value.trim() !== baseText.trim()) submitEntry();
   };
   session = s;
-  if (!recInst) recInst = makeRec();
   try {
+    recInst = makeRec(fresh.ctor); recFrame = fresh.frame;
     recInst.start();
   } catch (e) {
-    // il riconoscitore risulta ancora acceso: ne creiamo uno nuovo e riproviamo subito
     logMic("start rifiutato: " + (e && e.name));
-    try { recInst.abort(); } catch (e2) {}
-    recInst = makeRec();
-    try { recInst.start(); } catch (e3) { logMic("secondo start rifiutato"); session = null; setListening(false); statusEl.textContent = micError("start-timeout"); return; }
+    if (recInst) disposeRecognizer(recInst, recFrame);
+    try { recInst = makeRec(SR); recFrame = null; recInst.start(); }
+    catch (e2) { logMic("secondo start rifiutato"); session = null; recInst = null; setListening(false); statusEl.textContent = "Il microfono si è bloccato. Tocca «Sblocca il microfono» qui sotto e riprova."; showMicReset(true); return; }
   }
   setListening(true);
-  startTimer = setTimeout(() => { if (!s.started && !s.heard) { s.errCode = "start-timeout"; try { recInst.abort(); } catch (e) {} s.finish(); } }, 5000);
+  startTimer = setTimeout(() => { if (!s.started && !s.heard) { s.errCode = "start-timeout"; try { recInst && recInst.abort(); } catch (e) {} s.finish(); } }, 5000);
   safetyTimer = setTimeout(stopRec, 30000);
 });
+// "Sblocca il microfono": ricarica l'app (i dati restano salvati) e ricorda di dirlo all'utente
+document.addEventListener("click", ev => {
+  if (!ev.target.closest || !ev.target.closest("#micReset")) return;
+  try { sessionStorage.setItem("spese-mic-reset", "1"); } catch (e) {}
+  location.reload();
+});
+try {
+  if (sessionStorage.getItem("spese-mic-reset") === "1") {
+    sessionStorage.removeItem("spese-mic-reset");
+    setTimeout(() => { statusEl.textContent = "Microfono sbloccato: toccalo e di' la spesa."; }, 0);
+  }
+} catch (e) {}
 
 /* ===== Salvare file: condividi sul telefono, scarica sul computer ===== */
 async function saveFile(name, text, type) {
@@ -1129,7 +1173,7 @@ if (isIOS && !isStandalone) {
 }
 
 
-const APP_VERSION = "8";
+const APP_VERSION = "9";
 /* ===== Invita qualcuno ===== */
 const APP_URL = "https://spesequotidiane33.netlify.app/";
 const SHARE_TEXT = "Prova Spese a voce: dici la spesa e l'app la registra e la divide per categoria. Gratis, senza registrazione.";
