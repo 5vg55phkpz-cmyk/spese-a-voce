@@ -697,13 +697,16 @@ function stopRec() {
   const r = rec;
   setTimeout(() => { if (rec === r && finishRec) { try { r.abort(); } catch (e) {} finishRec(); } }, 1500);
 }
-let silenceTimer = null, startTimer = null;
+let silenceTimer = null, startTimer = null, lastRec = null;
 mic.addEventListener("click", () => {
   if (!micAvailable) return;
   if (listening) { stopRec(); return; }
   let errCode = "", heard = false, started = false, done = false;
   baseText = entry.value.trim() ? entry.value.trim() + " " : "";
+  // iPhone: la sessione precedente può tenere ancora occupato il microfono, la chiudiamo del tutto
+  if (lastRec) { const old = lastRec; lastRec = null; try { old.onend = old.onresult = old.onerror = old.onstart = null; old.abort(); } catch (e) {} }
   const r = new SR();
+  lastRec = r;
   rec = r;
   r.lang = "it-IT"; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
   const arm = ms => { clearTimeout(silenceTimer); silenceTimer = setTimeout(stopRec, ms); };
@@ -711,6 +714,9 @@ mic.addEventListener("click", () => {
     if (done) return; done = true;
     clearTimeout(silenceTimer); clearTimeout(startTimer); clearTimeout(safetyTimer);
     if (rec === r) { rec = null; finishRec = null; }
+    // libera subito il microfono, così la prossima dettatura riparte pulita
+    try { r.onend = r.onresult = r.onerror = r.onstart = null; r.abort(); } catch (e) {}
+    if (lastRec === r) lastRec = null;
     setListening(false);
     if (errCode && errCode !== "aborted") statusEl.textContent = micError(errCode);
     else if (!heard) statusEl.textContent = micError("no-speech");
@@ -1098,7 +1104,7 @@ if (isIOS && !isStandalone) {
 }
 
 
-const APP_VERSION = "6";
+const APP_VERSION = "7";
 /* ===== Invita qualcuno ===== */
 const APP_URL = "https://spesequotidiane33.netlify.app/";
 const SHARE_TEXT = "Prova Spese a voce: dici la spesa e l'app la registra e la divide per categoria. Gratis, senza registrazione.";
