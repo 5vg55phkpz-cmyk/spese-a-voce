@@ -1098,7 +1098,7 @@ if (isIOS && !isStandalone) {
 }
 
 
-const APP_VERSION = "5";
+const APP_VERSION = "6";
 /* ===== Invita qualcuno ===== */
 const APP_URL = "https://spesequotidiane33.netlify.app/";
 const SHARE_TEXT = "Prova Spese a voce: dici la spesa e l'app la registra e la divide per categoria. Gratis, senza registrazione.";
@@ -1132,7 +1132,15 @@ initDictation();
 renderAll();
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
-  window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => { try { reg.update(); } catch (e) {} }).catch(() => {});
+  });
+  // quando arriva una versione nuova dell'app, ricarica la pagina una volta sola
+  let reloadedForUpdate = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloadedForUpdate || listening) return;
+    reloadedForUpdate = true; location.reload();
+  });
 }
 </script>
 </body>

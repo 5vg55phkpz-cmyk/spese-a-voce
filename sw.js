@@ -1,6 +1,6 @@
 /* Spese a voce: funzionamento offline.
    Cambia VERSION quando pubblichi una nuova versione dell'app. */
-const VERSION = "v5";
+const VERSION = "v6";
 const CACHE = "spese-" + VERSION;
 const SHELL = ["./", "./index.html", "./manifest.webmanifest",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png", "./icons/favicon-32.png"];
@@ -29,17 +29,26 @@ self.addEventListener("fetch", e => {
     return;
   }
   if (url.origin !== location.origin) return;
-  // File dell'app: risponde subito con la copia salvata e la aggiorna in background
+  // La pagina dell'app: sempre la versione più recente da internet, la copia salvata solo se offline
+  if (req.mode === "navigate" || url.pathname.endsWith("/index.html")) {
+    e.respondWith((async () => {
+      const cache = await caches.open(CACHE);
+      try {
+        const res = await fetch(req, { cache: "no-store" });
+        if (res.ok) cache.put("./index.html", res.clone());
+        return res;
+      } catch (err) {
+        return (await cache.match("./index.html")) || new Response("Sei offline e l'app non è ancora salvata su questo dispositivo.", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+      }
+    })());
+    return;
+  }
+  // Icone e altri file: copia salvata subito, aggiornata in background
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
-    const key = req.mode === "navigate" ? "./index.html" : req;
-    const cached = await cache.match(key, { ignoreSearch: true });
-    const network = fetch(req).then(res => {
-      if (res.ok) cache.put(key, res.clone());
-      return res;
-    }).catch(() => null);
+    const cached = await cache.match(req, { ignoreSearch: true });
+    const network = fetch(req).then(res => { if (res.ok) cache.put(req, res.clone()); return res; }).catch(() => null);
     if (cached) { e.waitUntil(network); return cached; }
-    const res = await network;
-    return res || new Response("Sei offline e questa pagina non è ancora salvata.", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    return (await network) || new Response("", { status: 504 });
   })());
 });
